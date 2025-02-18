@@ -419,7 +419,7 @@ HTML_TEMPLATE = """
         </div>
         <div class="col-md-6">
           <div class="system-info-item">
-          <div><i class="fas fa-microchip me-2"></i>CPU Usage: {{ system_info.cpu_percent }}%</div>
+            <div><i class="fas fa-microchip me-2"></i>CPU Usage: {{ system_info.cpu_percent }}%</div>
           </div>
           <div class="system-info-item">
             <div><i class="fas fa-folder me-2"></i>Upload Folder: {{ system_info.upload_folder_size }}</div>
@@ -511,7 +511,7 @@ HTML_TEMPLATE = """
                 <div class="d-flex justify-content-between align-items-center">
                   <div>
                     <span class="size-info">
-                        {% if info.formatted_downloaded %}
+                      {% if info.formatted_downloaded %}
                         {{ info.formatted_downloaded }} / {{ info.formatted_size }}
                       {% endif %}
                     </span>
@@ -622,56 +622,10 @@ HTML_TEMPLATE = """
             </div>
             <div class="modal-footer">
               <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="submit" class="btn btn-danger">Delete</button>
+              <button type="submit" class="btn btn-danger">Delete</button>
             </div>
           </div>
         </form>
-      </div>
-    </div>
-    
-    <!-- File Details Modal -->
-    <div class="modal fade" id="fileDetailsModal" tabindex="-1" aria-labelledby="fileDetailsModalLabel" aria-hidden="true">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title" id="fileDetailsModalLabel">File Details</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-          </div>
-          <div class="modal-body">
-            <div id="file-details"></div>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-          </div>
-        </div>
-      </div>
-    </div>
-    
-    <!-- Settings Modal -->
-    <div class="modal fade" id="settingsModal" tabindex="-1" aria-labelledby="settingsModalLabel" aria-hidden="true">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title" id="settingsModalLabel">Settings</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-          </div>
-          <div class="modal-body">
-            <form>
-              <div class="mb-3">
-                <label for="upload-folder" class="form-label">Upload Folder:</label>
-                <input type="text" class="form-control" id="upload-folder" value="{{ UPLOAD_FOLDER }}" readonly>
-              </div>
-              <div class="mb-3">
-                <label for="max-downloads" class="form-label">Max Downloads:</label>
-                <input type="number" class="form-control" id="max-downloads" value="5">
-              </div>
-            </form>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-            <button type="button" class="btn btn-primary">Save Changes</button>
-          </div>
-        </div>
       </div>
     </div>
     
@@ -735,7 +689,7 @@ HTML_TEMPLATE = """
           }
         });
       });
-     
+
       // Cancel a download
       function cancelDownload(filename){
         if(confirm('Are you sure you want to cancel this download?')){
@@ -764,3 +718,96 @@ HTML_TEMPLATE = """
     </script>
   </body>
 </html>
+"""
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "POST":
+        url = request.form.get("url")
+        custom_url = request.form.get("custom_url")
+        if url:
+            try:
+                response = requests.head(url, allow_redirects=True)
+                original_filename = get_filename_from_url(url, response) or f"download_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                save_filename = secure_filename(original_filename)
+                if custom_url:
+                    file_mappings[save_filename] = custom_url
+                # Start download in a separate thread.
+                thread = threading.Thread(
+                    target=download_file_async,
+                    args=(url, save_filename, original_filename)
+                )
+                thread.daemon = True
+                thread.start()
+                downloads_status[save_filename] = {
+                    'status': 'starting',
+                    'progress': 0,
+                    'size': 0,
+                    'downloaded': 0,
+                    'original_name': original_filename
+                }
+                flash("Download started!", "success")
+            except Exception as e:
+                flash(f"Error: {str(e)}", "danger")
+        return redirect(url_for("index"))
+    return render_template_string(HTML_TEMPLATE, downloads=downloads_status, file_mappings=file_mappings, download_history=download_history, system_info=get_system_info())
+
+@app.route("/status")
+def get_status():
+    return jsonify({'downloads': downloads_status, 'system_info': get_system_info()})
+
+@app.route("/download/<path:filename>")
+def download_file(filename):
+    for real_filename, custom_url in file_mappings.items():
+        if custom_url == filename:
+            return send_from_directory(UPLOAD_FOLDER, real_filename, as_attachment=True)
+    return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=True)
+
+@app.route("/rename/<filename>", methods=["POST"])
+def rename_file(filename):
+    new_name = request.form.get("new_name")
+    if not new_name:
+        return jsonify({"status": "error", "message": "No new name provided"})
+    try:
+        old_path = os.path.join(UPLOAD_FOLDER, filename)
+        new_filename = secure_filename(new_name)
+        new_path = os.path.join(UPLOAD_FOLDER, new_filename)
+        os.rename(old_path, new_path)
+        if filename in downloads_status:
+            downloads_status[new_filename] = downloads_status.pop(filename)
+            downloads_status[new_filename]['original_name'] = new_name
+        if filename in file_mappings:
+            file_mappings[new_filename] = file_mappings.pop(filename)
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+@app.route("/delete/<filename>", methods=["POST"])
+def delete_file(filename):
+    try:
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            downloads_status.pop(filename, None)
+            file_mappings.pop(filename, None)
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+@app.route("/cancel/<filename>", methods=["POST"])
+def cancel_download(filename):
+    cancel_flags[filename] = True
+    return jsonify({"status": "success"})
+
+@app.route("/clear", methods=["POST"])
+def clear_downloads():
+    cleared = []
+    for filename, info in list(downloads_status.items()):
+        if info.get("status") in ["completed", "failed", "cancelled", "duplicate"]:
+            downloads_status.pop(filename, None)
+            file_mappings.pop(filename, None)
+            cleared.append(filename)
+    return jsonify({"status": "success", "cleared": cleared})
+
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=5000)
